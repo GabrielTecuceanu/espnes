@@ -13,6 +13,7 @@
 #include "freertos/task.h"
 #include "esp_timer.h"
 #include "driver/gpio.h"
+#include "esp_adc/adc_oneshot.h"
 #include "display.h"
 #include "audio_out.h"
 #include "sd.h"
@@ -89,15 +90,35 @@ static void vid_custom_blit(bitmap_t *bmp, int num_dirties, rect_t *dirty_rects)
 }
 
 // ── Audio task (Core 1) ────────────────────────────────────────────────────
-// Runs independently so the SPI display push on Core 0 never starves the DMA.
+#define VOL_CH  ADC_CHANNEL_6   // GPIO7 → ADC1 channel 6
+
+static adc_oneshot_unit_handle_t vol_adc = NULL;
+
 static void audio_task_fn(void *arg) {
     (void)arg;
     static int16_t buf[FRAG_SIZE];
+    float vol = 1.0f;
+    int   tick = 0;
+
     for (;;) {
         if (audio_cb)
             audio_cb(buf, FRAG_SIZE);
         else
             memset(buf, 0, sizeof(buf));
+
+        // Re-read ADC every ~50 ms (8 chunks × 5.8 ms each)
+        if (++tick >= 8) {
+            tick = 0;
+            int raw = 4095;
+            if (vol_adc)
+                adc_oneshot_read(vol_adc, VOL_CH, &raw);
+            float v = raw / 4095.0f;
+            vol = v * v;  // quadratic → logarithmic feel
+        }
+
+        for (int i = 0; i < FRAG_SIZE; i++)
+            buf[i] = (int16_t)(buf[i] * vol);
+
         audio_write(buf, FRAG_SIZE);
     }
 }
@@ -210,6 +231,11 @@ int osd_init(void) {
         uint8_t *data = sd_load_rom(path, &size);
         if (data) osd_setromdata(data, size);
     }
+
+    adc_oneshot_unit_init_cfg_t adc_cfg = { .unit_id = ADC_UNIT_1 };
+    adc_oneshot_new_unit(&adc_cfg, &vol_adc);
+    adc_oneshot_chan_cfg_t ch_cfg = { .atten = ADC_ATTEN_DB_12, .bitwidth = ADC_BITWIDTH_DEFAULT };
+    adc_oneshot_config_channel(vol_adc, VOL_CH, &ch_cfg);
 
     primary_bmp = bmp_createhw(pixel_buf, NES_W, NES_H, NES_W);
     if (!primary_bmp) return -1;
