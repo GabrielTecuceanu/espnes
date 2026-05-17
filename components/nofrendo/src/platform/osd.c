@@ -10,7 +10,8 @@
 #include <event.h>
 #include <nesinput.h>
 #include "freertos/FreeRTOS.h"
-#include "freertos/timers.h"
+#include "freertos/task.h"
+#include "esp_timer.h"
 #include "driver/gpio.h"
 #include "display.h"
 #include "audio_out.h"
@@ -76,27 +77,28 @@ static void vid_free_write(int num_dirties, rect_t *dirty_rects) {
 static void vid_custom_blit(bitmap_t *bmp, int num_dirties, rect_t *dirty_rects) {
     (void)num_dirties; (void)dirty_rects;
 
-    // Convert palette indices → RGB565 row by row, push to display
-    // Centered: 32px black border left/right (256 in 320)
-    for (int y = 0; y < NES_H; y++) {
+    int h = bmp->height;
+    int y_off = (240 - h) / 2;
+    for (int y = 0; y < h; y++) {
         const uint8_t *src = bmp->line[y];
         for (int x = 0; x < NES_W; x++)
             row_rgb[x] = palette[src[x]];
-        display_push_frame(32, y, NES_W, 1, row_rgb);
+        display_push_frame(32, y_off + y, NES_W, 1, row_rgb);
     }
+    // Audio is handled by audio_task on Core 1 — no drain here.
+}
 
-    // Drain audio for this frame
-    if (audio_cb) {
-        static int16_t audio_buf[FRAG_SIZE * 2];
-        int left = SAMPLE_RATE / 60;
-        while (left > 0) {
-            int n = left < FRAG_SIZE ? left : FRAG_SIZE;
-            audio_cb(audio_buf, n * 2); // NOFRENDO gives bytes
-            audio_write(audio_buf, n);
-            left -= n;
-        }
-    } else {
-        audio_silence();
+// ── Audio task (Core 1) ────────────────────────────────────────────────────
+// Runs independently so the SPI display push on Core 0 never starves the DMA.
+static void audio_task_fn(void *arg) {
+    (void)arg;
+    static int16_t buf[FRAG_SIZE];
+    for (;;) {
+        if (audio_cb)
+            audio_cb(buf, FRAG_SIZE);
+        else
+            memset(buf, 0, sizeof(buf));
+        audio_write(buf, FRAG_SIZE);
     }
 }
 
@@ -120,14 +122,22 @@ void osd_getvideoinfo(vidinfo_t *info) {
 }
 
 // ── Timer ──────────────────────────────────────────────────────────────────
-static TimerHandle_t nes_timer;
+static esp_timer_handle_t nes_timer;
+static void (*nes_tick_cb)(void) = NULL;
+static void nes_timer_cb(void *arg) { (void)arg; if (nes_tick_cb) nes_tick_cb(); }
 
 int osd_installtimer(int frequency, void *func, int funcsize,
                      void *counter, int countersize) {
     (void)funcsize; (void)counter; (void)countersize;
-    nes_timer = xTimerCreate("nes", configTICK_RATE_HZ / frequency,
-                             pdTRUE, NULL, (TimerCallbackFunction_t)func);
-    xTimerStart(nes_timer, 0);
+    nes_tick_cb = (void(*)(void))func;
+    const esp_timer_create_args_t args = {
+        .callback = nes_timer_cb,
+        .arg      = NULL,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name     = "nes",
+    };
+    esp_timer_create(&args, &nes_timer);
+    esp_timer_start_periodic(nes_timer, 1000000 / frequency); // microseconds → exact 60 Hz
     return 0;
 }
 
@@ -180,18 +190,6 @@ void osd_getmouse(int *x, int *y, int *button) {
 // ── Init / shutdown ────────────────────────────────────────────────────────
 static int logprint(const char *s) { return printf("%s", s); }
 
-int osd_init(void) {
-    log_chain_logfunc(logprint);
-    display_init();
-    audio_init(SAMPLE_RATE);
-    input_init();
-    // Allocate persistent framebuffer bitmap (reused every frame)
-    primary_bmp = bmp_createhw(pixel_buf, NES_W, NES_H, NES_W);
-    return primary_bmp ? 0 : -1;
-}
-
-void osd_shutdown(void) { audio_cb = NULL; }
-
 // ── ROM data ───────────────────────────────────────────────────────────────
 static uint8_t *rom_data = NULL;
 static size_t   rom_size = 0;
@@ -199,19 +197,35 @@ static size_t   rom_size = 0;
 void osd_setromdata(uint8_t *data, size_t size) { rom_data = data; rom_size = size; }
 char *osd_getromdata(void) { return (char *)rom_data; }
 
-int osd_main(int argc, char *argv[]) {
-    (void)argc; (void)argv;
-    config.filename = configfilename;
+int osd_init(void) {
+    log_chain_logfunc(logprint);
+    display_init();           // initializes SPI2 bus — must come before sd_init
+    audio_init(SAMPLE_RATE);
+    input_init();
 
     extern const char *nes_rom_path;
     const char *path = nes_rom_path ? nes_rom_path : "/sdcard/rom.nes";
-
     if (sd_init() == 0) {
         size_t size = 0;
         uint8_t *data = sd_load_rom(path, &size);
         if (data) osd_setromdata(data, size);
     }
 
+    primary_bmp = bmp_createhw(pixel_buf, NES_W, NES_H, NES_W);
+    if (!primary_bmp) return -1;
+
+    xTaskCreatePinnedToCore(audio_task_fn, "nes_audio", 4096, NULL,
+                            configMAX_PRIORITIES - 1, NULL, 1);
+    return 0;
+}
+
+void osd_shutdown(void) { audio_cb = NULL; }
+
+int osd_main(int argc, char *argv[]) {
+    (void)argc; (void)argv;
+    config.filename = configfilename;
+    extern const char *nes_rom_path;
+    const char *path = nes_rom_path ? nes_rom_path : "/sdcard/rom.nes";
     return main_loop(path, system_autodetect);
 }
 

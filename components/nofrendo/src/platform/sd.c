@@ -15,6 +15,10 @@
 
 static sdmmc_card_t *card = NULL;
 
+// SPI2 bus is already initialized by display_init(); returning ESP_OK
+// prevents esp_vfs_fat_sdspi_mount from double-initializing the bus.
+static esp_err_t spi_bus_already_init(void) { return ESP_OK; }
+
 int sd_init(void)
 {
     esp_vfs_fat_sdmmc_mount_config_t mount_cfg = {
@@ -24,6 +28,7 @@ int sd_init(void)
     };
 
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+    host.init = spi_bus_already_init;   // bus already up from display_init()
 
     sdspi_device_config_t dev_cfg = SDSPI_DEVICE_CONFIG_DEFAULT();
     dev_cfg.gpio_cs = PIN_CS_SD;

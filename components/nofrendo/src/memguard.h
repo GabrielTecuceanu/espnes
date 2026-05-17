@@ -42,13 +42,18 @@ extern char *_my_strdup(const char *string, char *file, int line);
 
 #else /* !NOFRENDO_DEBUG */
 
-/* On embedded targets, route directly to stdlib — no macro pollution */
+/* Include stdlib first so its malloc/free declarations are processed
+ * before we redefine malloc — subsequent includes of stdlib.h are no-ops. */
 #include <stdlib.h>
 #include <string.h>
 
 extern void *_my_malloc(int size);
 extern void _my_free(void **data);
 extern char *_my_strdup(const char *string);
+
+/* Redirect NOFRENDO malloc to PSRAM-aware allocator; don't redefine free
+ * (its declaration would be mangled by the macro before we can undef it). */
+#define malloc(s) _my_malloc(s)
 
 #endif /* !NOFRENDO_DEBUG */
 

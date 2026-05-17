@@ -3,7 +3,7 @@ file(GLOB_RECURSE NOFRENDO_SRCS "${CMAKE_CURRENT_LIST_DIR}/src/*.c")
 idf_component_register(
     SRCS ${NOFRENDO_SRCS}
     INCLUDE_DIRS "src" "src/platform" "src/nes" "src/cpu" "src/sndhrdw" "src/libsnss"
-    REQUIRES driver esp_lcd esp_driver_i2s esp_hw_support fatfs sdmmc
+    REQUIRES driver esp_lcd esp_driver_i2s esp_hw_support esp_timer fatfs sdmmc
 )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE

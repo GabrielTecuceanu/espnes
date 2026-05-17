@@ -35,7 +35,14 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <stddef.h>
 #include <log.h>
+
+/* Forward-declare heap_caps_malloc to avoid including IDF headers that
+ * redefine 'bool' after noftypes.h's enum bool definition. */
+extern void *heap_caps_malloc(size_t size, unsigned int caps);
+#define MALLOC_CAP_8BIT    (1 << 2)
+#define MALLOC_CAP_SPIRAM  (1 << 10)
 
 
 /* Maximum number of allocated blocks at any one time */
@@ -328,13 +335,15 @@ char *_my_strdup(const char *string, char *file, int line)
 
 #else /* !NOFRENDO_DEBUG */
 
-/* allocates memory and clears it */
+/* allocates memory and clears it — prefer PSRAM to keep internal SRAM free */
 void *_my_malloc(int size)
 {
    void *temp;
    char fail[256];
 
-   temp = malloc(size);
+   temp = heap_caps_malloc(size, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
+   if (NULL == temp)
+      temp = malloc(size);
 
    if (NULL == temp)
    {

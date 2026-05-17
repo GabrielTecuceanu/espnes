@@ -370,7 +370,7 @@ int vid_setmode(int width, int height)
 //   if (NULL != back_buffer)
 //      bmp_destroy(&back_buffer);
 
-   primary_buffer = bmp_create(width, height, 0); /* no overdraw */
+   primary_buffer = bmp_create(width, height, 8); /* 8-px overdraw for tile_xofs ≤ 7 */
    if (NULL == primary_buffer)
       return -1;
 
