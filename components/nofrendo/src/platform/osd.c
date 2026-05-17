@@ -14,6 +14,7 @@
 #include "driver/gpio.h"
 #include "display.h"
 #include "audio_out.h"
+#include "sd.h"
 
 // ── Pins (active-low, internal pull-up) ───────────────────────────────────
 #define BTN_UP     47
@@ -191,22 +192,28 @@ int osd_init(void) {
 
 void osd_shutdown(void) { audio_cb = NULL; }
 
-int osd_main(int argc, char *argv[]) {
-    (void)argc; (void)argv;
-    config.filename = configfilename;
-    // ROM path set by main.c via global (see below)
-    extern const char *nes_rom_path;
-    return main_loop(nes_rom_path ? nes_rom_path : "/sdcard/rom.nes",
-                     system_autodetect);
-}
-
 // ── ROM data ───────────────────────────────────────────────────────────────
-// Filled in by sd_load_rom() before nofrendo_main(); NULL until then.
 static uint8_t *rom_data = NULL;
 static size_t   rom_size = 0;
 
 void osd_setromdata(uint8_t *data, size_t size) { rom_data = data; rom_size = size; }
 char *osd_getromdata(void) { return (char *)rom_data; }
+
+int osd_main(int argc, char *argv[]) {
+    (void)argc; (void)argv;
+    config.filename = configfilename;
+
+    extern const char *nes_rom_path;
+    const char *path = nes_rom_path ? nes_rom_path : "/sdcard/rom.nes";
+
+    if (sd_init() == 0) {
+        size_t size = 0;
+        uint8_t *data = sd_load_rom(path, &size);
+        if (data) osd_setromdata(data, size);
+    }
+
+    return main_loop(path, system_autodetect);
+}
 
 // ── Filename helpers (no-op on ESP32) ─────────────────────────────────────
 void osd_fullname(char *fullname, const char *shortname) {
