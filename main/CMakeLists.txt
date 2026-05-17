@@ -1,0 +1,5 @@
+idf_component_register(
+    SRCS "main.c"
+    INCLUDE_DIRS "."
+    REQUIRES driver esp_lcd esp_driver_i2s esp_hw_support
+)
