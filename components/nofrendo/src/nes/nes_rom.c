@@ -83,7 +83,7 @@ typedef struct inesheader_s
 #define  VRAM_BANK_LENGTH  0x2000
 
 /* Save battery-backed RAM */
-static void rom_savesram(rominfo_t *rominfo)
+void rom_savesram(rominfo_t *rominfo)
 {
    FILE *fp;
    char fn[PATH_MAX + 1];
@@ -446,6 +446,8 @@ rominfo_t *rom_load(const char *filename)
       return NULL;
 
    memset(rominfo, 0, sizeof(rominfo_t));
+   if (filename)
+      strncpy(rominfo->filename, filename, PATH_MAX);
 
    /* Get the header and stick it into rominfo struct */
 	if (rom_getheader(&rom, rominfo))

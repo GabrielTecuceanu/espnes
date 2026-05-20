@@ -1,13 +1,13 @@
-/* espNES — main entry point */
-#include "nofrendo.h"
+/* espNES - main entry point */
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "nofrendo.h"
 
-static const char *TAG = "espnes";
+static const char* TAG = "espnes";
 
 // ROM path passed to osd_main() inside NOFRENDO
-const char *nes_rom_path = "/sdcard/rom.nes";
+const char* nes_rom_path = "/sdcard/rom.nes";
 
 void app_main(void) {
     ESP_LOGI(TAG, "espNES starting — ROM: %s", nes_rom_path);

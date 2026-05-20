@@ -17,6 +17,8 @@
 #include "display.h"
 #include "audio_out.h"
 #include "sd.h"
+#include "nes.h"
+#include "nes_rom.h"
 
 // ── Pins (active-low, internal pull-up) ───────────────────────────────────
 #define BTN_UP     47
@@ -86,7 +88,15 @@ static void vid_custom_blit(bitmap_t *bmp, int num_dirties, rect_t *dirty_rects)
             row_rgb[x] = palette[src[x]];
         display_push_frame(32, y_off + y, NES_W, 1, row_rgb);
     }
-    // Audio is handled by audio_task on Core 1 — no drain here.
+
+    // Auto-save SRAM every 30 seconds (1800 frames @ 60Hz)
+    static int save_ticker = 0;
+    if (++save_ticker >= 1800) {
+        save_ticker = 0;
+        nes_t *nes = nes_getcontextptr();
+        if (nes && nes->rominfo)
+            rom_savesram(nes->rominfo);
+    }
 }
 
 // ── Audio task (Core 1) ────────────────────────────────────────────────────
@@ -259,5 +269,9 @@ int osd_main(int argc, char *argv[]) {
 void osd_fullname(char *fullname, const char *shortname) {
     strncpy(fullname, shortname, PATH_MAX);
 }
-char *osd_newextension(char *string, char *ext) { (void)ext; return string; }
+char *osd_newextension(char *string, char *ext) {
+    char *dot = strrchr(string, '.');
+    if (dot) strcpy(dot, ext);
+    return string;
+}
 int   osd_makesnapname(char *filename, int len)  { (void)filename; (void)len; return -1; }
