@@ -232,7 +232,7 @@ void osd_getvideoinfo(vidinfo_t *info) {
 }
 
 // ── Timer ──────────────────────────────────────────────────────────────────
-static esp_timer_handle_t nes_timer;
+static esp_timer_handle_t nes_timer = NULL;
 static void (*nes_tick_cb)(void) = NULL;
 static void nes_timer_cb(void *arg) { (void)arg; if (nes_tick_cb) nes_tick_cb(); }
 
@@ -240,6 +240,11 @@ int osd_installtimer(int frequency, void *func, int funcsize,
                      void *counter, int countersize) {
     (void)funcsize; (void)counter; (void)countersize;
     nes_tick_cb = (void(*)(void))func;
+    if (nes_timer) {
+        esp_timer_stop(nes_timer);
+        esp_timer_delete(nes_timer);
+        nes_timer = NULL;
+    }
     const esp_timer_create_args_t args = {
         .callback = nes_timer_cb,
         .arg      = NULL,
@@ -247,7 +252,7 @@ int osd_installtimer(int frequency, void *func, int funcsize,
         .name     = "nes",
     };
     esp_timer_create(&args, &nes_timer);
-    esp_timer_start_periodic(nes_timer, 1000000 / frequency); // microseconds → exact 60 Hz
+    esp_timer_start_periodic(nes_timer, 1000000 / frequency);
     return 0;
 }
 
@@ -267,8 +272,11 @@ static void input_init(void) {
 
 static inline int btn(int gpio) { return gpio_get_level(gpio) == 0; }
 
+static volatile bool osd_return_to_menu = false;
+
 void osd_getinput(void) {
     static int prev = 0;
+    static int select_a_frames = 0;
     struct { int gpio; int ev_make; int ev_break; } map[] = {
         {BTN_A,      event_joypad1_a,      event_joypad1_a},
         {BTN_B,      event_joypad1_b,      event_joypad1_b},
@@ -284,9 +292,26 @@ void osd_getinput(void) {
         if (btn(map[i].gpio)) cur |= 1 << i;
     int changed = cur ^ prev;
 
-    // SELECT (bit 2) + UP (bit 4) / DOWN (bit 5) = software volume control
-    // Suppress UP/DOWN from reaching the NES while this combo is active.
     int suppress = 0;
+
+    // SELECT (bit 2) + A (bit 0) held for ~500ms → save SRAM + return to menu
+    if ((cur & (1 << 2)) && (cur & (1 << 0))) {
+        suppress |= (1 << 2) | (1 << 0);
+        if (++select_a_frames >= 25) {   // 25 × ~20ms = 500ms
+            select_a_frames = 0;
+            nes_t *nes = nes_getcontextptr();
+            if (nes && nes->rominfo)
+                rom_savesram(nes->rominfo);
+            audio_cb = NULL;
+            osd_return_to_menu = true;
+            main_quit();
+            return;
+        }
+    } else {
+        select_a_frames = 0;
+    }
+
+    // SELECT (bit 2) + UP (bit 4) / DOWN (bit 5) = software volume control
     if (cur & (1 << 2)) {
         if ((changed & (1 << 4)) && (cur & (1 << 4))) {
             if (sw_vol < 10) sw_vol++;
@@ -326,24 +351,42 @@ static char     osd_sel_path[128] = "/sdcard/rom.nes";
 void osd_setromdata(uint8_t *data, size_t size) { rom_data = data; rom_size = size; }
 char *osd_getromdata(void) { return (char *)rom_data; }
 
-int osd_init(void) {
+/* Show ROM selection menu, load chosen ROM into PSRAM. Called before each game. */
+static void osd_select_rom(void) {
+    static bool sd_mounted = false;
+    if (!sd_mounted)
+        sd_mounted = (sd_init() == 0);
+    if (!sd_mounted) return;
+
+    static char rom_names[SD_MAX_ROMS][SD_NAME_LEN];
+    int count = sd_list_roms(rom_names, SD_MAX_ROMS);
+    int sel = menu_select((const char (*)[SD_NAME_LEN])rom_names, count);
+    display_clear_black();  // erase menu artifacts from side bands
+    if (sel >= 0)
+        snprintf(osd_sel_path, sizeof(osd_sel_path), "/sdcard/%s", rom_names[sel]);
+
+    if (rom_data) { free(rom_data); rom_data = NULL; rom_size = 0; }
+
+    size_t size = 0;
+    uint8_t *data = sd_load_rom(osd_sel_path, &size);
+    if (data) osd_setromdata(data, size);
+}
+
+/* osd_init() is called by main_loop(); hardware is already up from osd_main(). */
+int osd_init(void) { return 0; }
+
+void osd_shutdown(void) { audio_cb = NULL; }
+
+int osd_main(int argc, char *argv[]) {
+    (void)argc; (void)argv;
+    config.filename = configfilename;
+
+    /* One-time hardware init — must happen before first osd_select_rom() call
+       so the display is ready for the LVGL menu. */
     log_chain_logfunc(logprint);
-    display_init();           // initializes SPI2 bus — must come before sd_init
+    display_init();
     audio_init(SAMPLE_RATE);
     input_init();
-
-    if (sd_init() == 0) {
-        static char rom_names[SD_MAX_ROMS][SD_NAME_LEN];
-        int count = sd_list_roms(rom_names, SD_MAX_ROMS);
-        int sel = menu_select((const char (*)[SD_NAME_LEN])rom_names, count);
-        display_clear_black();  // erase menu artifacts from side bands
-        if (sel >= 0)
-            snprintf(osd_sel_path, sizeof(osd_sel_path), "/sdcard/%s", rom_names[sel]);
-
-        size_t size = 0;
-        uint8_t *data = sd_load_rom(osd_sel_path, &size);
-        if (data) osd_setromdata(data, size);
-    }
 
     adc_oneshot_unit_init_cfg_t adc_cfg = { .unit_id = ADC_UNIT_1 };
     adc_oneshot_new_unit(&adc_cfg, &vol_adc);
@@ -355,15 +398,17 @@ int osd_init(void) {
 
     xTaskCreatePinnedToCore(audio_task_fn, "nes_audio", 4096, NULL,
                             configMAX_PRIORITIES - 1, NULL, 1);
+
+    /* Outer loop: menu → game → menu → … */
+    osd_select_rom();
+    for (;;) {
+        main_loop(osd_sel_path, system_autodetect);
+        if (!osd_return_to_menu) break;
+        osd_return_to_menu = false;
+        osd_select_rom();
+        main_reset();
+    }
     return 0;
-}
-
-void osd_shutdown(void) { audio_cb = NULL; }
-
-int osd_main(int argc, char *argv[]) {
-    (void)argc; (void)argv;
-    config.filename = configfilename;
-    return main_loop(osd_sel_path, system_autodetect);
 }
 
 // ── Filename helpers (no-op on ESP32) ─────────────────────────────────────

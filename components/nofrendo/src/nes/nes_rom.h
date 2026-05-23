@@ -56,6 +56,7 @@ typedef struct rominfo_s
    mirror_t mirror;
 
    uint8 flags;
+   bool rom_from_osd; /* rom/vrom point into osd PSRAM buffer — don't free() them */
 
    char filename[PATH_MAX + 1];
 } rominfo_t;

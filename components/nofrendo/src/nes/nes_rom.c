@@ -452,6 +452,7 @@ rominfo_t *rom_load(const char *filename)
       return NULL;
 
    memset(rominfo, 0, sizeof(rominfo_t));
+   rominfo->rom_from_osd = true; /* rom/vrom are pointers into the PSRAM buffer */
    if (filename)
       strncpy(rominfo->filename, filename, PATH_MAX);
 
@@ -513,10 +514,13 @@ void rom_free(rominfo_t **rominfo)
 
    if ((*rominfo)->sram)
       free((*rominfo)->sram);
-   if ((*rominfo)->rom)
-      free((*rominfo)->rom);
-   if ((*rominfo)->vrom)
-      free((*rominfo)->vrom);
+   /* rom/vrom are mid-buffer pointers into the OSD PSRAM allocation — never free them */
+   if (!(*rominfo)->rom_from_osd) {
+      if ((*rominfo)->rom)
+         free((*rominfo)->rom);
+      if ((*rominfo)->vrom)
+         free((*rominfo)->vrom);
+   }
    if ((*rominfo)->vram)
       free((*rominfo)->vram);
 

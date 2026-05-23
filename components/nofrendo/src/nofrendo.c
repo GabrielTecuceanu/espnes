@@ -105,6 +105,12 @@ void main_eject(void)
    console.type = system_unknown;
 }
 
+/* Reset console state so main_loop() can run again after a soft return */
+void main_reset(void)
+{
+   console.quit = false;
+}
+
 /* Act on the user's quit requests */
 void main_quit(void)
 {

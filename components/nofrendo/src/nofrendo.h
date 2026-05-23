@@ -50,6 +50,7 @@ extern int main_loop(const char *filename, system_t type);
 extern void main_insert(const char *filename, system_t type);
 extern void main_eject(void);
 extern void main_quit(void);
+extern void main_reset(void);
 
 #endif /* !_NOFRENDO_H_ */
 

@@ -151,7 +151,14 @@ int menu_select(const char names[][SD_NAME_LEN], int count)
     for (int i = 0; i < 5; i++) lvgl_tick();
 
     /* ── Button polling loop ───────────────────────────────────────────── */
+    /* Seed prev with currently-held buttons so we don't treat a held A/START
+       (from the SELECT+A return shortcut) as a fresh press on menu open. */
     int prev = 0;
+    if (gpio_get_level(BTN_UP)    == 0) prev |= 1;
+    if (gpio_get_level(BTN_DOWN)  == 0) prev |= 2;
+    if (gpio_get_level(BTN_A)     == 0) prev |= 4;
+    if (gpio_get_level(BTN_START) == 0) prev |= 8;
+
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(20));
         lvgl_tick();
