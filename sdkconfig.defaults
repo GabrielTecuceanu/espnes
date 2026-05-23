@@ -1,0 +1,3 @@
+# LVGL font config needed by menu.c
+CONFIG_LV_FONT_MONTSERRAT_10=y
+CONFIG_LV_FONT_MONTSERRAT_14=y

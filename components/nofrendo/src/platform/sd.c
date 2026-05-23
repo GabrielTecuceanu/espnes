@@ -1,6 +1,8 @@
 /* sd.c — FAT mount on shared SPI2 + iNES ROM loader */
 #include "sd.h"
 #include <stdbool.h>   // must come before sdmmc headers; sd_protocol_types.h uses bool without including stdbool.h
+#include <dirent.h>
+#include <string.h>
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
 #include "driver/sdspi_host.h"
@@ -77,4 +79,37 @@ uint8_t *sd_load_rom(const char *path, size_t *out_size)
     ESP_LOGI(TAG, "ROM loaded: %s (%u bytes)", path, (unsigned)size);
     *out_size = size;
     return buf;
+}
+
+int sd_list_roms(char names[][SD_NAME_LEN], int max_count)
+{
+    DIR *dir = opendir(MOUNT_POINT);
+    if (!dir) return 0;
+
+    int count = 0;
+    struct dirent *ent;
+    while (count < max_count && (ent = readdir(dir)) != NULL) {
+        const char *name = ent->d_name;
+        if (name[0] == '.') continue;  // skip hidden files and macOS ._* metadata
+        size_t len = strlen(name);
+        if (len > 4 && strcasecmp(name + len - 4, ".nes") == 0) {
+            strncpy(names[count], name, SD_NAME_LEN - 1);
+            names[count][SD_NAME_LEN - 1] = '\0';
+            count++;
+        }
+    }
+    closedir(dir);
+
+    // Alphabetical sort
+    for (int i = 0; i < count - 1; i++)
+        for (int j = i + 1; j < count; j++)
+            if (strcasecmp(names[i], names[j]) > 0) {
+                char tmp[SD_NAME_LEN];
+                memcpy(tmp, names[i], SD_NAME_LEN);
+                memcpy(names[i], names[j], SD_NAME_LEN);
+                memcpy(names[j], tmp, SD_NAME_LEN);
+            }
+
+    ESP_LOGI(TAG, "Found %d ROM(s) on SD", count);
+    return count;
 }

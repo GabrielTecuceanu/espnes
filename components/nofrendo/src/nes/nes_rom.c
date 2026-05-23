@@ -439,6 +439,12 @@ char *rom_getinfo(rominfo_t *rominfo)
 rominfo_t *rom_load(const char *filename)
 {
    unsigned char *rom=(unsigned char*)osd_getromdata();
+   if (NULL == rom)
+   {
+      log_printf("rom_load: no ROM data loaded\n");
+      return NULL;
+   }
+
    rominfo_t *rominfo;
 
    rominfo = malloc(sizeof(rominfo_t));

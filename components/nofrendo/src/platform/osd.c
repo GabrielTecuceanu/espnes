@@ -17,6 +17,7 @@
 #include "display.h"
 #include "audio_out.h"
 #include "sd.h"
+#include "menu.h"
 #include "nes.h"
 #include "nes_rom.h"
 
@@ -224,6 +225,7 @@ static int logprint(const char *s) { return printf("%s", s); }
 // ── ROM data ───────────────────────────────────────────────────────────────
 static uint8_t *rom_data = NULL;
 static size_t   rom_size = 0;
+static char     osd_sel_path[128] = "/sdcard/rom.nes";
 
 void osd_setromdata(uint8_t *data, size_t size) { rom_data = data; rom_size = size; }
 char *osd_getromdata(void) { return (char *)rom_data; }
@@ -234,11 +236,16 @@ int osd_init(void) {
     audio_init(SAMPLE_RATE);
     input_init();
 
-    extern const char *nes_rom_path;
-    const char *path = nes_rom_path ? nes_rom_path : "/sdcard/rom.nes";
     if (sd_init() == 0) {
+        static char rom_names[SD_MAX_ROMS][SD_NAME_LEN];
+        int count = sd_list_roms(rom_names, SD_MAX_ROMS);
+        int sel = menu_select((const char (*)[SD_NAME_LEN])rom_names, count);
+        display_clear_black();  // erase menu artifacts from side bands
+        if (sel >= 0)
+            snprintf(osd_sel_path, sizeof(osd_sel_path), "/sdcard/%s", rom_names[sel]);
+
         size_t size = 0;
-        uint8_t *data = sd_load_rom(path, &size);
+        uint8_t *data = sd_load_rom(osd_sel_path, &size);
         if (data) osd_setromdata(data, size);
     }
 
@@ -260,9 +267,7 @@ void osd_shutdown(void) { audio_cb = NULL; }
 int osd_main(int argc, char *argv[]) {
     (void)argc; (void)argv;
     config.filename = configfilename;
-    extern const char *nes_rom_path;
-    const char *path = nes_rom_path ? nes_rom_path : "/sdcard/rom.nes";
-    return main_loop(path, system_autodetect);
+    return main_loop(osd_sel_path, system_autodetect);
 }
 
 // ── Filename helpers (no-op on ESP32) ─────────────────────────────────────

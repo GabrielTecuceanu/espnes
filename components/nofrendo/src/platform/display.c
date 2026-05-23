@@ -78,6 +78,13 @@ void display_init(void)
     gpio_set_level(PIN_BL, 1);
 }
 
+void display_clear_black(void)
+{
+    static uint16_t black[LCD_W * 16]; /* zero-initialised = black */
+    for (int y = 0; y < LCD_H; y += 16)
+        esp_lcd_panel_draw_bitmap(panel, 0, y, LCD_W, y + 16, black);
+}
+
 void display_push_frame(int x, int y, int w, int h, const uint16_t *rgb565)
 {
     esp_lcd_panel_draw_bitmap(panel, x, y, x + w, y + h, rgb565);
