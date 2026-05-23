@@ -48,6 +48,71 @@ void osd_getsoundinfo(sndinfo_t *info) {
     info->bps         = 16;
 }
 
+// ── Volume indicator ───────────────────────────────────────────────────────
+static volatile int     sw_vol           = 10;  // 0-10 software level
+static volatile int64_t vol_show_until   = 0;   // µs timestamp until indicator is shown
+
+#define VOL_X    288   // right side band
+#define VOL_W     32
+#define VOL_SEG   21   // px per segment (19 fill + 2 gap)
+#define VOL_DIG   4    // digit scale factor (3×5 → 12×20 px)
+
+// 3×5 bitmap digits, MSB = left pixel
+static const uint8_t digit3x5[10][5] = {
+    {0x7,0x5,0x5,0x5,0x7},  // 0
+    {0x2,0x6,0x2,0x2,0x7},  // 1
+    {0x7,0x1,0x7,0x4,0x7},  // 2
+    {0x7,0x1,0x3,0x1,0x7},  // 3
+    {0x5,0x5,0x7,0x1,0x1},  // 4
+    {0x7,0x4,0x7,0x1,0x7},  // 5
+    {0x7,0x4,0x7,0x5,0x7},  // 6
+    {0x7,0x1,0x1,0x1,0x1},  // 7
+    {0x7,0x5,0x7,0x5,0x7},  // 8
+    {0x7,0x5,0x7,0x1,0x7},  // 9
+};
+
+static void draw_digit(uint16_t *band, int x0, int y0, int d) {
+    for (int row = 0; row < 5; row++)
+        for (int col = 0; col < 3; col++) {
+            uint16_t c = (digit3x5[d][row] & (0x4 >> col)) ? 0xFFFFu : 0x0000u;
+            for (int sy = 0; sy < VOL_DIG; sy++)
+                for (int sx = 0; sx < VOL_DIG; sx++)
+                    band[(y0 + row*VOL_DIG + sy)*VOL_W + x0 + col*VOL_DIG + sx] = c;
+        }
+}
+
+static void draw_vol_indicator(int level) {
+    // level 0-10; -1 = clear to black
+    static uint16_t band[VOL_W * 240];  // 15 KB in BSS — zero-init on first call
+    memset(band, 0, sizeof(band));
+
+    if (level >= 0) {
+        // ── Digit(s) at top (y=5, height=20px) ───────────────────────────
+        int dw = 3 * VOL_DIG;  // 12px per digit
+        if (level < 10) {
+            draw_digit(band, (VOL_W - dw) / 2, 5, level);
+        } else {
+            int x0 = (VOL_W - (2*dw + 2)) / 2;
+            draw_digit(band, x0,        5, 1);
+            draw_digit(band, x0+dw+2,   5, 0);
+        }
+
+        // ── Bar segments from bottom (y=239 upward) ───────────────────────
+        // green segments: 0xE007 (bswap of 0x07E0)
+        for (int seg = 0; seg < level; seg++) {
+            int y_bot = 239 - seg * VOL_SEG;
+            int y_top = y_bot - (VOL_SEG - 3);  // 3px gap per segment
+            for (int y = y_top; y <= y_bot; y++)
+                for (int x = 3; x < VOL_W - 3; x++)
+                    band[y * VOL_W + x] = 0xE007u;
+        }
+    }
+
+    // Push in two SPI-safe chunks (32×160 and 32×80 = 10240 and 5120 bytes)
+    display_push_frame(VOL_X,   0, VOL_W, 160, band);
+    display_push_frame(VOL_X, 160, VOL_W,  80, band + 160*VOL_W);
+}
+
 // ── Video ──────────────────────────────────────────────────────────────────
 static uint16_t  palette[256];           // NES palette → RGB565 (byte-swapped)
 static uint8_t   pixel_buf[NES_W * NES_H]; // 8-bit palette-index framebuffer
@@ -98,6 +163,19 @@ static void vid_custom_blit(bitmap_t *bmp, int num_dirties, rect_t *dirty_rects)
         if (nes && nes->rominfo)
             rom_savesram(nes->rominfo);
     }
+
+    // Volume indicator: show while timer active, clear once after expiry
+    static int vol_drawn = -1;
+    int cur_vol = sw_vol;
+    if (esp_timer_get_time() < vol_show_until) {
+        if (cur_vol != vol_drawn) {
+            draw_vol_indicator(cur_vol);
+            vol_drawn = cur_vol;
+        }
+    } else if (vol_drawn >= 0) {
+        draw_vol_indicator(-1);  // clear
+        vol_drawn = -1;
+    }
 }
 
 // ── Audio task (Core 1) ────────────────────────────────────────────────────
@@ -124,7 +202,7 @@ static void audio_task_fn(void *arg) {
             if (vol_adc)
                 adc_oneshot_read(vol_adc, VOL_CH, &raw);
             float v = raw / 4095.0f;
-            vol = v * v;  // quadratic → logarithmic feel
+            vol = v * v * (sw_vol / 10.0f);  // ADC quadratic × software level
         }
 
         for (int i = 0; i < FRAG_SIZE; i++)
@@ -205,7 +283,25 @@ void osd_getinput(void) {
     for (int i = 0; i < 8; i++)
         if (btn(map[i].gpio)) cur |= 1 << i;
     int changed = cur ^ prev;
+
+    // SELECT (bit 2) + UP (bit 4) / DOWN (bit 5) = software volume control
+    // Suppress UP/DOWN from reaching the NES while this combo is active.
+    int suppress = 0;
+    if (cur & (1 << 2)) {
+        if ((changed & (1 << 4)) && (cur & (1 << 4))) {
+            if (sw_vol < 10) sw_vol++;
+            vol_show_until = esp_timer_get_time() + 3000000LL;
+            suppress |= (1 << 4);
+        }
+        if ((changed & (1 << 5)) && (cur & (1 << 5))) {
+            if (sw_vol > 0) sw_vol--;
+            vol_show_until = esp_timer_get_time() + 3000000LL;
+            suppress |= (1 << 5);
+        }
+    }
+
     for (int i = 0; i < 8; i++) {
+        if (suppress & (1 << i)) continue;
         if (changed & (1 << i)) {
             event_t evh = event_get(map[i].ev_make);
             if (evh)
