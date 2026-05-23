@@ -202,7 +202,8 @@ static void audio_task_fn(void *arg) {
             if (vol_adc)
                 adc_oneshot_read(vol_adc, VOL_CH, &raw);
             float v = raw / 4095.0f;
-            vol = v * v * (sw_vol / 10.0f);  // ADC quadratic × software level
+            float sw_scale = (sw_vol >= 10) ? 1.3f : sw_vol / 10.0f;
+            vol = v * v * sw_scale;  // ADC quadratic × software level
         }
 
         for (int i = 0; i < FRAG_SIZE; i++)
