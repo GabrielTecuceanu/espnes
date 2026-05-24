@@ -8,6 +8,7 @@ typedef enum {
     PAUSE_SAVE     = 1,
     PAUSE_LOAD     = 2,
     PAUSE_ROM_MENU = 3,
+    PAUSE_SLEEP    = 4,
 } pause_action_t;
 
 typedef struct {

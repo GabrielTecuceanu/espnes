@@ -366,8 +366,9 @@ pause_result_t menu_pause(const char *rom_path)
         "Save State",
         "Load State",
         "Back to ROM menu",
+        "Sleep",
     };
-    const int NUM_OPTIONS = 4;
+    const int NUM_OPTIONS = 5;
 
     lv_obj_t *list = lv_list_create(scr);
     lv_obj_set_size(list, DISP_W, DISP_H - 28 - 24);
@@ -381,7 +382,7 @@ pause_result_t menu_pause(const char *rom_path)
     lv_obj_set_style_pad_right(list, 0, 0);
     lv_obj_set_style_pad_top(list, 2, 0);
 
-    lv_obj_t *btns[4];
+    lv_obj_t *btns[5];
     for (int i = 0; i < NUM_OPTIONS; i++) {
         btns[i] = lv_list_add_btn(list, NULL, option_labels[i]);
         lv_obj_set_style_bg_color(btns[i], lv_color_make(15, 15, 40), 0);

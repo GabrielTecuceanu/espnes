@@ -21,6 +21,7 @@
 #include "nes.h"
 #include "nes_rom.h"
 #include "nesstate.h"
+#include "esp_sleep.h"
 
 // ── Pins (active-low, internal pull-up) ───────────────────────────────────
 #define BTN_UP     47
@@ -362,6 +363,21 @@ void osd_getinput(void) {
                     osd_return_to_menu = true;
                     main_quit();
                     return;
+                }
+                case PAUSE_SLEEP: {
+                    nes_t *nes = nes_getcontextptr();
+                    if (nes && nes->rominfo)
+                        rom_savesram(nes->rominfo);
+                    settings_save();
+                    display_sleep();  // backlight off, hold GPIO low
+                    gpio_wakeup_enable(BTN_START, GPIO_INTR_LOW_LEVEL);
+                    esp_sleep_enable_gpio_wakeup();
+                    esp_light_sleep_start();  // blocks; CPU/PSRAM stay powered
+                    /* Drain the START press used to wake — wait for release so it
+                       doesn't reach the NES as a game input on the next poll. */
+                    while (gpio_get_level(BTN_START) == 0) vTaskDelay(pdMS_TO_TICKS(10));
+                    display_wake(sw_bl);  // release GPIO hold, restore backlight
+                    break;  // falls through to display_clear_black + audio restore
                 }
                 default:  /* PAUSE_RESUME */
                     break;

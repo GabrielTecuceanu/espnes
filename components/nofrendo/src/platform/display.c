@@ -36,8 +36,24 @@ void display_set_backlight(int level)
     ledc_update_duty(LEDC_LOW_SPEED_MODE, BL_LEDC_CHANNEL);
 }
 
+void display_sleep(void)
+{
+    ledc_stop(LEDC_LOW_SPEED_MODE, BL_LEDC_CHANNEL, 0 /* idle_level = low */);
+    gpio_hold_en(PIN_BL);
+}
+
+void display_wake(int level)
+{
+    gpio_hold_dis(PIN_BL);
+    display_set_backlight(level);
+}
+
 void display_init(void)
 {
+    /* Release any GPIO hold left over from a deep-sleep cycle before
+       LEDC takes ownership of the pin, otherwise the pin stays locked LOW. */
+    gpio_hold_dis(PIN_BL);
+
     /* Backlight via LEDC PWM — start at 0 (off) to avoid white flash */
     ledc_timer_config_t lt = {
         .speed_mode      = LEDC_LOW_SPEED_MODE,
