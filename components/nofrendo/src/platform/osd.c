@@ -287,6 +287,29 @@ static void input_init(void) {
 
 static inline int btn(int gpio) { return gpio_get_level(gpio) == 0; }
 
+// ── Persistent settings (/sdcard/settings.cfg) ────────────────────────────
+#define SETTINGS_PATH "/sdcard/settings.cfg"
+
+static void settings_load(void) {
+    FILE *f = fopen(SETTINGS_PATH, "r");
+    if (!f) return;
+    char line[32];
+    while (fgets(line, sizeof(line), f)) {
+        int v;
+        if (sscanf(line, "vol=%d", &v) == 1 && v >= 0 && v <= 10) sw_vol = v;
+        if (sscanf(line, "bl=%d",  &v) == 1 && v >= 0 && v <= 10) sw_bl  = v;
+    }
+    fclose(f);
+    display_set_backlight(sw_bl);
+}
+
+static void settings_save(void) {
+    FILE *f = fopen(SETTINGS_PATH, "w");
+    if (!f) return;
+    fprintf(f, "vol=%d\nbl=%d\n", (int)sw_vol, (int)sw_bl);
+    fclose(f);
+}
+
 static volatile bool osd_return_to_menu = false;
 
 void osd_getinput(void) {
@@ -362,23 +385,27 @@ void osd_getinput(void) {
             if (sw_vol < 10) sw_vol++;
             vol_show_until = now + 3000000LL;
             suppress |= (1 << 4);
+            settings_save();
         }
         if ((changed & (1 << 5)) && (cur & (1 << 5))) {  // DOWN
             if (sw_vol > 0) sw_vol--;
             vol_show_until = now + 3000000LL;
             suppress |= (1 << 5);
+            settings_save();
         }
         if ((changed & (1 << 7)) && (cur & (1 << 7))) {  // RIGHT → brighter
             if (sw_bl < 10) sw_bl++;
             display_set_backlight(sw_bl);
             bl_show_until = now + 3000000LL;
             suppress |= (1 << 7);
+            settings_save();
         }
         if ((changed & (1 << 6)) && (cur & (1 << 6))) {  // LEFT → dimmer
             if (sw_bl > 0) sw_bl--;
             display_set_backlight(sw_bl);
             bl_show_until = now + 3000000LL;
             suppress |= (1 << 6);
+            settings_save();
         }
     }
 
@@ -410,8 +437,10 @@ char *osd_getromdata(void) { return (char *)rom_data; }
 /* Show ROM selection menu, load chosen ROM into PSRAM. Called before each game. */
 static void osd_select_rom(void) {
     static bool sd_mounted = false;
-    if (!sd_mounted)
+    if (!sd_mounted) {
         sd_mounted = (sd_init() == 0);
+        if (sd_mounted) settings_load();  // load once, right after first mount
+    }
     if (!sd_mounted) return;
 
     static char rom_names[SD_MAX_ROMS][SD_NAME_LEN];
