@@ -1,6 +1,4 @@
-# LVGL font config needed by menu.c
 CONFIG_LV_FONT_MONTSERRAT_10=y
 CONFIG_LV_FONT_MONTSERRAT_14=y
 
-# Main task stack: NES emulation + LVGL pause menu are deeply nested
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=32768

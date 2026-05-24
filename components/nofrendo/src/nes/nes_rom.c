@@ -328,7 +328,6 @@ static int rom_getheader(unsigned char **rom, rominfo_t *rominfo)
 #define  RESERVED_LENGTH   8
    inesheader_t head;
    uint8 reserved[RESERVED_LENGTH];
-   bool header_dirty;
 
    ASSERT(rom);
    ASSERT(*rom);
@@ -366,14 +365,10 @@ static int rom_getheader(unsigned char **rom, rominfo_t *rominfo)
    memset(reserved, 0, RESERVED_LENGTH);
    if (0 == memcmp(head.reserved, reserved, RESERVED_LENGTH))
    {
-      /* We were clean */
-      header_dirty = false;
       rominfo->mapper_number |= (head.mapper_hinybble & 0xF0);
    }
    else
    {
-      header_dirty = true;
-
       /* @!?#@! DiskDude. */
       if (('D' == head.mapper_hinybble) && (0 == memcmp(head.reserved, "iskDude!", 8)))
          log_printf("`DiskDude!' found in ROM header, ignoring high mapper nybble\n");
