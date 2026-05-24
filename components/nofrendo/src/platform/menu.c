@@ -23,6 +23,10 @@
 #define DISP_H   240
 #define BUF_ROWS  10
 #define BUF_SIZE (DISP_W * BUF_ROWS)
+#define MENU_ROW_H 22
+#define MENU_VISIBLE_ROWS ((DISP_H - 28 - 24 - 4) / MENU_ROW_H)
+#define MENU_REPEAT_DELAY_MS 300
+#define MENU_REPEAT_RATE_MS   70
 
 /* Two separate buffers: LVGL renders into lvgl_buf, flush_cb byte-swaps into
    spi_buf so LVGL can immediately reuse lvgl_buf while SPI DMA is still running */
@@ -99,27 +103,25 @@ int menu_select(const char names[][SD_NAME_LEN], int count)
     lv_obj_set_style_text_color(title, lv_color_make(255, 210, 0), 0);
     lv_obj_center(title);
 
-    /* ── ROM list (middle) ─────────────────────────────────────────────── */
-    lv_obj_t *list = lv_list_create(scr);
-    lv_obj_set_size(list, DISP_W, DISP_H - 28 - 24);
-    lv_obj_set_pos(list, 0, 28);
-    lv_obj_set_style_bg_color(list, lv_color_make(15, 15, 40), 0);
-    lv_obj_set_style_bg_opa(list, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(list, 0, 0);
-    lv_obj_set_style_radius(list, 0, 0);
-    lv_obj_set_style_pad_row(list, 2, 0);
-    lv_obj_set_style_pad_left(list, 0, 0);
-    lv_obj_set_style_pad_right(list, 0, 0);
-    lv_obj_set_style_pad_top(list, 2, 0);
+    /* ── ROM list (middle): fixed visible rows, labels updated while moving ─ */
+    lv_obj_t *rows[MENU_VISIBLE_ROWS];
+    lv_obj_t *labels[MENU_VISIBLE_ROWS];
+    for (int i = 0; i < MENU_VISIBLE_ROWS; i++) {
+        rows[i] = lv_obj_create(scr);
+        lv_obj_set_size(rows[i], DISP_W, MENU_ROW_H);
+        lv_obj_set_pos(rows[i], 0, 30 + i * MENU_ROW_H);
+        lv_obj_set_style_bg_color(rows[i], lv_color_make(15, 15, 40), 0);
+        lv_obj_set_style_bg_opa(rows[i], LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(rows[i], 0, 0);
+        lv_obj_set_style_radius(rows[i], 0, 0);
+        lv_obj_set_style_pad_all(rows[i], 0, 0);
+        lv_obj_clear_flag(rows[i], LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_clear_flag(rows[i], LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t *btns[SD_MAX_ROMS];
-    for (int i = 0; i < count; i++) {
-        btns[i] = lv_list_add_btn(list, NULL, names[i]);
-        lv_obj_set_style_bg_color(btns[i], lv_color_make(15, 15, 40), 0);
-        lv_obj_set_style_bg_opa(btns[i], LV_OPA_COVER, 0);
-        lv_obj_set_style_text_color(btns[i], lv_color_make(200, 200, 200), 0);
-        lv_obj_set_style_border_width(btns[i], 0, 0);
-        lv_obj_clear_flag(btns[i], LV_OBJ_FLAG_CLICKABLE);
+        labels[i] = lv_label_create(rows[i]);
+        lv_label_set_long_mode(labels[i], LV_LABEL_LONG_DOT);
+        lv_obj_set_width(labels[i], DISP_W - 12);
+        lv_obj_set_pos(labels[i], 6, 3);
     }
 
     /* ── Hint bar (bottom 24px) ────────────────────────────────────────── */
@@ -138,16 +140,29 @@ int menu_select(const char names[][SD_NAME_LEN], int count)
     lv_obj_set_style_text_color(hint, lv_color_make(160, 160, 160), 0);
     lv_obj_center(hint);
 
-    /* ── Highlight helper ──────────────────────────────────────────────── */
+    /* ── Highlight/render helpers ──────────────────────────────────────── */
     int sel = 0;
-#define HIGHLIGHT(i, on) do { \
-    lv_obj_set_style_bg_color(btns[i], \
-        (on) ? lv_color_make(0, 90, 210)   : lv_color_make(15, 15, 40), 0); \
-    lv_obj_set_style_text_color(btns[i], \
-        (on) ? lv_color_make(255, 230, 0)  : lv_color_make(200, 200, 200), 0); \
+#define RENDER_ROWS() do { \
+    int top = sel - (MENU_VISIBLE_ROWS / 2); \
+    if (top < 0) top = 0; \
+    if (top > count - MENU_VISIBLE_ROWS) top = count - MENU_VISIBLE_ROWS; \
+    if (top < 0) top = 0; \
+    for (int i = 0; i < MENU_VISIBLE_ROWS; i++) { \
+        int idx = top + i; \
+        if (idx >= count) { \
+            lv_obj_add_flag(rows[i], LV_OBJ_FLAG_HIDDEN); \
+            continue; \
+        } \
+        lv_obj_clear_flag(rows[i], LV_OBJ_FLAG_HIDDEN); \
+        lv_label_set_text(labels[i], names[idx]); \
+        lv_obj_set_style_bg_color(rows[i], \
+            (idx == sel) ? lv_color_make(0, 90, 210) : lv_color_make(15, 15, 40), 0); \
+        lv_obj_set_style_text_color(labels[i], \
+            (idx == sel) ? lv_color_make(255, 230, 0) : lv_color_make(200, 200, 200), 0); \
+    } \
 } while (0)
 
-    HIGHLIGHT(sel, true);
+    RENDER_ROWS();
 
     /* Force full initial render */
     lv_obj_invalidate(scr);
@@ -161,10 +176,13 @@ int menu_select(const char names[][SD_NAME_LEN], int count)
     if (gpio_get_level(BTN_DOWN)  == 0) prev |= 2;
     if (gpio_get_level(BTN_A)     == 0) prev |= 4;
     if (gpio_get_level(BTN_START) == 0) prev |= 8;
+    int64_t next_up_repeat = 0;
+    int64_t next_down_repeat = 0;
 
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(20));
         lvgl_tick();
+        int64_t now = esp_timer_get_time() / 1000;
 
         int cur = 0;
         if (gpio_get_level(BTN_UP)    == 0) cur |= 1;
@@ -175,17 +193,30 @@ int menu_select(const char names[][SD_NAME_LEN], int count)
         int pressed = cur & ~prev;
         prev = cur;
 
-        if ((pressed & 1) && sel > 0) {
-            HIGHLIGHT(sel, false);
-            sel--;
-            HIGHLIGHT(sel, true);
-            lv_obj_scroll_to_view(btns[sel], LV_ANIM_ON);
+        bool move_up = false;
+        bool move_down = false;
+        if (pressed & 1) {
+            move_up = true;
+            next_up_repeat = now + MENU_REPEAT_DELAY_MS;
+        } else if ((cur & 1) && now >= next_up_repeat) {
+            move_up = true;
+            next_up_repeat = now + MENU_REPEAT_RATE_MS;
         }
-        if ((pressed & 2) && sel < count - 1) {
-            HIGHLIGHT(sel, false);
+        if (pressed & 2) {
+            move_down = true;
+            next_down_repeat = now + MENU_REPEAT_DELAY_MS;
+        } else if ((cur & 2) && now >= next_down_repeat) {
+            move_down = true;
+            next_down_repeat = now + MENU_REPEAT_RATE_MS;
+        }
+
+        if (move_up && sel > 0) {
+            sel--;
+            RENDER_ROWS();
+        }
+        if (move_down && sel < count - 1) {
             sel++;
-            HIGHLIGHT(sel, true);
-            lv_obj_scroll_to_view(btns[sel], LV_ANIM_ON);
+            RENDER_ROWS();
         }
         if (pressed & (4 | 8)) {
             ESP_LOGI(TAG, "Selected: %s", names[sel]);
@@ -193,7 +224,7 @@ int menu_select(const char names[][SD_NAME_LEN], int count)
         }
     }
 
-#undef HIGHLIGHT
+#undef RENDER_ROWS
 
     lv_obj_clean(scr);
     lv_deinit();

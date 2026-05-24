@@ -24,7 +24,7 @@
 
 #define LCD_W     320
 #define LCD_H     240
-#define SPI_CLK_HZ (80 * 1000 * 1000)
+#define SPI_CLK_HZ (40 * 1000 * 1000)
 
 static esp_lcd_panel_handle_t panel = NULL;
 

@@ -2,8 +2,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SD_MAX_ROMS 64
-#define SD_NAME_LEN 64
+#define SD_MAX_ROMS 200
+#define SD_NAME_LEN 128
 
 #define SD_ROM_DIR "/sdcard/ROMS"
 #define SD_SAVE_DIR "/sdcard/saves"

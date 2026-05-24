@@ -12,6 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_timer.h"
+#include "esp_log.h"
 #include "driver/gpio.h"
 #include "esp_adc/adc_oneshot.h"
 #include "display.h"
@@ -245,7 +246,7 @@ void osd_getvideoinfo(vidinfo_t *info) {
 }
 
 // ── ROM path (forward-declared so osd_getinput can reference it) ──────────
-static char osd_sel_path[128] = SD_ROM_DIR "/rom.nes";
+static char osd_sel_path[300] = SD_ROM_DIR "/rom.nes";
 
 // ── Timer ──────────────────────────────────────────────────────────────────
 static esp_timer_handle_t nes_timer = NULL;
@@ -471,6 +472,7 @@ static void osd_select_rom(void) {
     size_t size = 0;
     uint8_t *data = sd_load_rom(osd_sel_path, &size);
     if (data) osd_setromdata(data, size);
+    else ESP_LOGE("osd", "ROM load failed: %s", osd_sel_path);
 }
 
 /* osd_init() is called by main_loop(); hardware is already up from osd_main(). */
@@ -503,6 +505,7 @@ int osd_main(int argc, char *argv[]) {
     /* Outer loop: menu → game → menu → … */
     osd_select_rom();
     for (;;) {
+        if (!rom_data) { osd_select_rom(); continue; }  // guard: skip main_loop if load failed
         main_loop(osd_sel_path, system_autodetect);
         if (!osd_return_to_menu) break;
         osd_return_to_menu = false;
