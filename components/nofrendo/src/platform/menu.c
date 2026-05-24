@@ -6,10 +6,16 @@
 #include "freertos/task.h"
 #include "esp_timer.h"
 #include "esp_log.h"
+#include "esp_pm.h"
 #include "lvgl.h"
 #include <string.h>
 #include <sys/stat.h>
 #include <limits.h>
+
+static void cpu_freq_mhz(int mhz) {
+    esp_pm_config_t cfg = { .max_freq_mhz = mhz, .min_freq_mhz = mhz, .light_sleep_enable = false };
+    esp_pm_configure(&cfg);
+}
 
 #define TAG "menu"
 
@@ -73,9 +79,11 @@ static void lvgl_tick(void)
 
 int menu_select(const char names[][SD_NAME_LEN], int count)
 {
-    if (count == 0) return -1;
+    cpu_freq_mhz(80);
+    if (count == 0) { cpu_freq_mhz(240); return -1; }
     if (count == 1) {
         ESP_LOGI(TAG, "Auto-selecting: %s", names[0]);
+        cpu_freq_mhz(240);
         return 0;
     }
 
@@ -155,6 +163,7 @@ int menu_select(const char names[][SD_NAME_LEN], int count)
         } \
         lv_obj_clear_flag(rows[i], LV_OBJ_FLAG_HIDDEN); \
         lv_label_set_text(labels[i], names[idx]); \
+        lv_label_set_long_mode(labels[i], (idx == sel) ? LV_LABEL_LONG_SCROLL_CIRCULAR : LV_LABEL_LONG_DOT); \
         lv_obj_set_style_bg_color(rows[i], \
             (idx == sel) ? lv_color_make(0, 90, 210) : lv_color_make(15, 15, 40), 0); \
         lv_obj_set_style_text_color(labels[i], \
@@ -228,6 +237,7 @@ int menu_select(const char names[][SD_NAME_LEN], int count)
 
     lv_obj_clean(scr);
     lv_deinit();
+    cpu_freq_mhz(240);
     return sel;
 }
 
@@ -367,6 +377,7 @@ static int pick_slot(const char *action_label, const char *rom_path)
 
 pause_result_t menu_pause(const char *rom_path)
 {
+    cpu_freq_mhz(80);
     lvgl_init();
 
     /* ── Screen ───────────────────────────────────────────────────────── */
@@ -485,17 +496,16 @@ pause_result_t menu_pause(const char *rom_path)
             if (sel == PAUSE_SAVE || sel == PAUSE_LOAD) {
                 /* Show slot picker within same LVGL context */
                 const char *picker_title = (sel == PAUSE_SAVE)
-                    ? "SAVE STATE — Select Slot"
-                    : "LOAD STATE — Select Slot";
+                    ? "SAVE STATE - Select Slot"
+                    : "LOAD STATE - Select Slot";
                 int slot = pick_slot(picker_title, rom_path);
                 if (slot >= 0) {
                     result.action = (pause_action_t)sel;
                     result.slot   = slot;
                     break;
                 }
-                /* B pressed in slot picker → resume */
-                result.action = PAUSE_RESUME;
-                break;
+                /* B pressed in slot picker → back to pause menu */
+                continue;
             }
             result.action = (pause_action_t)sel;
             break;
@@ -510,5 +520,6 @@ pause_result_t menu_pause(const char *rom_path)
 
     lv_obj_clean(scr);
     lv_deinit();
+    cpu_freq_mhz(240);
     return result;
 }

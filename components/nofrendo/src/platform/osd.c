@@ -12,7 +12,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_timer.h"
-#include "esp_log.h"
 #include "driver/gpio.h"
 #include "esp_adc/adc_oneshot.h"
 #include "display.h"
@@ -312,11 +311,14 @@ static void settings_save(void) {
     fclose(f);
 }
 
+#define AUTO_SLEEP_US (3LL * 60 * 1000000)   // 3 minutes of inactivity
+
 static volatile bool osd_return_to_menu = false;
 
 void osd_getinput(void) {
     static int prev = 0;
-    static int select_a_frames = 0;
+    static int64_t select_a_since = 0;
+    static int64_t last_input_time = 0;
     struct { int gpio; int ev_make; int ev_break; } map[] = {
         {BTN_A,      event_joypad1_a,      event_joypad1_a},
         {BTN_B,      event_joypad1_b,      event_joypad1_b},
@@ -334,11 +336,36 @@ void osd_getinput(void) {
 
     int suppress = 0;
 
+    // Reset inactivity timer on any button press
+    {
+        int64_t now = esp_timer_get_time();
+        if (cur) last_input_time = now;
+        if (last_input_time == 0) last_input_time = now;  // init on first call
+        if (now - last_input_time >= AUTO_SLEEP_US) {
+            last_input_time = now;
+            nes_t *nes = nes_getcontextptr();
+            if (nes && nes->rominfo) rom_savesram(nes->rominfo);
+            settings_save();
+            display_clear_black();
+            display_sleep();
+            gpio_wakeup_enable(BTN_START, GPIO_INTR_LOW_LEVEL);
+            esp_sleep_enable_gpio_wakeup();
+            esp_light_sleep_start();
+            while (gpio_get_level(BTN_START) == 0) vTaskDelay(pdMS_TO_TICKS(10));
+            display_clear_black();
+            display_wake(sw_bl);
+            last_input_time = esp_timer_get_time();
+            /* Caller (nes_emulate) resumes normally after return */
+        }
+    }
+
     // SELECT (bit 2) + A (bit 0) held for ~500ms → open pause menu
     if ((cur & (1 << 2)) && (cur & (1 << 0))) {
         suppress |= (1 << 2) | (1 << 0);
-        if (++select_a_frames >= 25) {   // 25 × ~20ms = 500ms
-            select_a_frames = 0;
+        int64_t now = esp_timer_get_time();
+        if (select_a_since == 0) select_a_since = now;
+        if (now - select_a_since >= 500000) {   // 500ms
+            select_a_since = 0;
             void (*saved_cb)(void *buf, int len) = audio_cb;
             audio_cb = NULL;
             display_clear_black();
@@ -347,16 +374,22 @@ void osd_getinput(void) {
                if we don't reset it, the emulator fast-forwards through the whole
                pause duration at 240 MHz, causing the APU to produce garbage audio. */
             int ticks_at_pause = nofrendo_ticks;
-            pause_result_t pr = menu_pause(osd_sel_path);
-            switch (pr.action) {
-                case PAUSE_SAVE:
+            pause_result_t pr;
+            for (;;) {
+                pr = menu_pause(osd_sel_path);
+                if (pr.action == PAUSE_SAVE) {
                     state_setslot(pr.slot);
                     state_save();
+                    /* stay in menu after save */
+                } else {
                     break;
-                case PAUSE_LOAD:
-                    state_setslot(pr.slot);
-                    state_load();
-                    break;
+                }
+            }
+            if (pr.action == PAUSE_LOAD) {
+                state_setslot(pr.slot);
+                state_load();
+            }
+            switch (pr.action) {
                 case PAUSE_ROM_MENU: {
                     nes_t *nes = nes_getcontextptr();
                     if (nes && nes->rominfo)
@@ -377,8 +410,9 @@ void osd_getinput(void) {
                     /* Drain the START press used to wake — wait for release so it
                        doesn't reach the NES as a game input on the next poll. */
                     while (gpio_get_level(BTN_START) == 0) vTaskDelay(pdMS_TO_TICKS(10));
-                    display_wake(sw_bl);  // release GPIO hold, restore backlight
-                    break;  // falls through to display_clear_black + audio restore
+                    display_clear_black();  // fill screen black before backlight on → no flash
+                    display_wake(sw_bl);
+                    break;
                 }
                 default:  /* PAUSE_RESUME */
                     break;
@@ -392,7 +426,7 @@ void osd_getinput(void) {
             nofrendo_ticks = ticks_at_pause + 1;
         }
     } else {
-        select_a_frames = 0;
+        select_a_since = 0;
     }
 
     // SELECT + UP/DOWN = volume   |   SELECT + RIGHT/LEFT = backlight
@@ -472,7 +506,7 @@ static void osd_select_rom(void) {
     size_t size = 0;
     uint8_t *data = sd_load_rom(osd_sel_path, &size);
     if (data) osd_setromdata(data, size);
-    else ESP_LOGE("osd", "ROM load failed: %s", osd_sel_path);
+    else printf("osd: ROM load failed: %s\n", osd_sel_path);
 }
 
 /* osd_init() is called by main_loop(); hardware is already up from osd_main(). */

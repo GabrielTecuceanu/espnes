@@ -8,7 +8,6 @@
 #define PIN_WS    6
 #define PIN_DOUT  4
 
-#define SILENCE_SAMPLES  64
 #define WRITE_BUF_FRAMES 256  /* max mono samples per audio_write call */
 
 static i2s_chan_handle_t tx_chan = NULL;
@@ -52,10 +51,3 @@ void audio_write(const int16_t *buf, int n_samples)
     i2s_channel_write(tx_chan, stereo, n_samples * 4, &written, portMAX_DELAY);
 }
 
-void audio_silence(void)
-{
-    if (!tx_chan) return;
-    static const int16_t zeros[SILENCE_SAMPLES * 2] = {0};
-    size_t written;
-    i2s_channel_write(tx_chan, zeros, sizeof(zeros), &written, 0);
-}

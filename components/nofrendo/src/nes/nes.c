@@ -26,6 +26,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <noftypes.h>
 #include "nes6502.h"
 #include <log.h>
@@ -397,6 +399,11 @@ void nes_emulate(void)
          frames_to_render = 0;
          nes_renderframe(true);
          system_video(true);
+      }
+      else
+      {
+         /* Waiting for next timer tick — yield instead of spinning */
+         taskYIELD();
       }
    }
 }
