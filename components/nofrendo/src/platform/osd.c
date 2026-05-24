@@ -50,70 +50,70 @@ void osd_getsoundinfo(sndinfo_t *info) {
     info->bps         = 16;
 }
 
-// ── Volume indicator ───────────────────────────────────────────────────────
-static volatile int     sw_vol           = 10;  // 0-10 software level
-static volatile int64_t vol_show_until   = 0;   // µs timestamp until indicator is shown
+// ── Side-band indicators (volume right, backlight left) ────────────────────
+static volatile int     sw_vol         = 10;
+static volatile int64_t vol_show_until = 0;
+static volatile int     sw_bl          = 10;
+static volatile int64_t bl_show_until  = 0;
 
-#define VOL_X    288   // right side band
-#define VOL_W     32
-#define VOL_SEG   21   // px per segment (19 fill + 2 gap)
-#define VOL_DIG   4    // digit scale factor (3×5 → 12×20 px)
+#define SIDE_W   32
+#define VOL_X   288   // right band
+#define BL_X      0   // left band
+#define SIDE_SEG 21   // px per segment (19 fill + 2 gap)
+#define SIDE_DIG  4   // digit scale (3×5 → 12×20 px)
 
-// 3×5 bitmap digits, MSB = left pixel
 static const uint8_t digit3x5[10][5] = {
-    {0x7,0x5,0x5,0x5,0x7},  // 0
-    {0x2,0x6,0x2,0x2,0x7},  // 1
-    {0x7,0x1,0x7,0x4,0x7},  // 2
-    {0x7,0x1,0x3,0x1,0x7},  // 3
-    {0x5,0x5,0x7,0x1,0x1},  // 4
-    {0x7,0x4,0x7,0x1,0x7},  // 5
-    {0x7,0x4,0x7,0x5,0x7},  // 6
-    {0x7,0x1,0x1,0x1,0x1},  // 7
-    {0x7,0x5,0x7,0x5,0x7},  // 8
-    {0x7,0x5,0x7,0x1,0x7},  // 9
+    {0x7,0x5,0x5,0x5,0x7},
+    {0x2,0x6,0x2,0x2,0x7},
+    {0x7,0x1,0x7,0x4,0x7},
+    {0x7,0x1,0x3,0x1,0x7},
+    {0x5,0x5,0x7,0x1,0x1},
+    {0x7,0x4,0x7,0x1,0x7},
+    {0x7,0x4,0x7,0x5,0x7},
+    {0x7,0x1,0x1,0x1,0x1},
+    {0x7,0x5,0x7,0x5,0x7},
+    {0x7,0x5,0x7,0x1,0x7},
 };
 
 static void draw_digit(uint16_t *band, int x0, int y0, int d) {
     for (int row = 0; row < 5; row++)
         for (int col = 0; col < 3; col++) {
             uint16_t c = (digit3x5[d][row] & (0x4 >> col)) ? 0xFFFFu : 0x0000u;
-            for (int sy = 0; sy < VOL_DIG; sy++)
-                for (int sx = 0; sx < VOL_DIG; sx++)
-                    band[(y0 + row*VOL_DIG + sy)*VOL_W + x0 + col*VOL_DIG + sx] = c;
+            for (int sy = 0; sy < SIDE_DIG; sy++)
+                for (int sx = 0; sx < SIDE_DIG; sx++)
+                    band[(y0 + row*SIDE_DIG + sy)*SIDE_W + x0 + col*SIDE_DIG + sx] = c;
         }
 }
 
-static void draw_vol_indicator(int level) {
-    // level 0-10; -1 = clear to black
-    static uint16_t band[VOL_W * 240];  // 15 KB in BSS — zero-init on first call
-    memset(band, 0, sizeof(band));
+/* Shared 15 KB render buffer — vol and bl are never drawn simultaneously */
+static uint16_t side_band[SIDE_W * 240];
 
+static void draw_side_indicator(int x_start, int level, uint16_t bar_color) {
+    memset(side_band, 0, sizeof(side_band));
     if (level >= 0) {
-        // ── Digit(s) at top (y=5, height=20px) ───────────────────────────
-        int dw = 3 * VOL_DIG;  // 12px per digit
+        int dw = 3 * SIDE_DIG;
         if (level < 10) {
-            draw_digit(band, (VOL_W - dw) / 2, 5, level);
+            draw_digit(side_band, (SIDE_W - dw) / 2, 5, level);
         } else {
-            int x0 = (VOL_W - (2*dw + 2)) / 2;
-            draw_digit(band, x0,        5, 1);
-            draw_digit(band, x0+dw+2,   5, 0);
+            int x0 = (SIDE_W - (2*dw + 2)) / 2;
+            draw_digit(side_band, x0,       5, 1);
+            draw_digit(side_band, x0+dw+2,  5, 0);
         }
-
-        // ── Bar segments from bottom (y=239 upward) ───────────────────────
-        // green segments: 0xE007 (bswap of 0x07E0)
         for (int seg = 0; seg < level; seg++) {
-            int y_bot = 239 - seg * VOL_SEG;
-            int y_top = y_bot - (VOL_SEG - 3);  // 3px gap per segment
+            int y_bot = 239 - seg * SIDE_SEG;
+            int y_top = y_bot - (SIDE_SEG - 3);
             for (int y = y_top; y <= y_bot; y++)
-                for (int x = 3; x < VOL_W - 3; x++)
-                    band[y * VOL_W + x] = 0xE007u;
+                for (int x = 3; x < SIDE_W - 3; x++)
+                    side_band[y * SIDE_W + x] = bar_color;
         }
     }
-
-    // Push in two SPI-safe chunks (32×160 and 32×80 = 10240 and 5120 bytes)
-    display_push_frame(VOL_X,   0, VOL_W, 160, band);
-    display_push_frame(VOL_X, 160, VOL_W,  80, band + 160*VOL_W);
+    display_push_frame(x_start,   0, SIDE_W, 160, side_band);
+    display_push_frame(x_start, 160, SIDE_W,  80, side_band + 160*SIDE_W);
 }
+
+/* 0xE007 = bswap(0x07E0) = green  |  0xE0FF = bswap(0xFFE0) = yellow */
+static void draw_vol_indicator(int level) { draw_side_indicator(VOL_X, level, 0xE007u); }
+static void draw_bl_indicator (int level) { draw_side_indicator(BL_X,  level, 0xE0FFu); }
 
 // ── Video ──────────────────────────────────────────────────────────────────
 static uint16_t  palette[256];           // NES palette → RGB565 (byte-swapped)
@@ -166,17 +166,24 @@ static void vid_custom_blit(bitmap_t *bmp, int num_dirties, rect_t *dirty_rects)
             rom_savesram(nes->rominfo);
     }
 
-    // Volume indicator: show while timer active, clear once after expiry
+    int64_t now = esp_timer_get_time();
+
+    // Volume indicator (right band)
     static int vol_drawn = -1;
     int cur_vol = sw_vol;
-    if (esp_timer_get_time() < vol_show_until) {
-        if (cur_vol != vol_drawn) {
-            draw_vol_indicator(cur_vol);
-            vol_drawn = cur_vol;
-        }
+    if (now < vol_show_until) {
+        if (cur_vol != vol_drawn) { draw_vol_indicator(cur_vol); vol_drawn = cur_vol; }
     } else if (vol_drawn >= 0) {
-        draw_vol_indicator(-1);  // clear
-        vol_drawn = -1;
+        draw_vol_indicator(-1); vol_drawn = -1;
+    }
+
+    // Backlight indicator (left band)
+    static int bl_drawn = -1;
+    int cur_bl = sw_bl;
+    if (now < bl_show_until) {
+        if (cur_bl != bl_drawn) { draw_bl_indicator(cur_bl); bl_drawn = cur_bl; }
+    } else if (bl_drawn >= 0) {
+        draw_bl_indicator(-1); bl_drawn = -1;
     }
 }
 
@@ -348,17 +355,30 @@ void osd_getinput(void) {
         select_a_frames = 0;
     }
 
-    // SELECT (bit 2) + UP (bit 4) / DOWN (bit 5) = software volume control
+    // SELECT + UP/DOWN = volume   |   SELECT + RIGHT/LEFT = backlight
     if (cur & (1 << 2)) {
-        if ((changed & (1 << 4)) && (cur & (1 << 4))) {
+        int64_t now = esp_timer_get_time();
+        if ((changed & (1 << 4)) && (cur & (1 << 4))) {  // UP
             if (sw_vol < 10) sw_vol++;
-            vol_show_until = esp_timer_get_time() + 3000000LL;
+            vol_show_until = now + 3000000LL;
             suppress |= (1 << 4);
         }
-        if ((changed & (1 << 5)) && (cur & (1 << 5))) {
+        if ((changed & (1 << 5)) && (cur & (1 << 5))) {  // DOWN
             if (sw_vol > 0) sw_vol--;
-            vol_show_until = esp_timer_get_time() + 3000000LL;
+            vol_show_until = now + 3000000LL;
             suppress |= (1 << 5);
+        }
+        if ((changed & (1 << 7)) && (cur & (1 << 7))) {  // RIGHT → brighter
+            if (sw_bl < 10) sw_bl++;
+            display_set_backlight(sw_bl);
+            bl_show_until = now + 3000000LL;
+            suppress |= (1 << 7);
+        }
+        if ((changed & (1 << 6)) && (cur & (1 << 6))) {  // LEFT → dimmer
+            if (sw_bl > 0) sw_bl--;
+            display_set_backlight(sw_bl);
+            bl_show_until = now + 3000000LL;
+            suppress |= (1 << 6);
         }
     }
 
