@@ -43,6 +43,11 @@ int sd_init(void)
         return -1;
     }
     ESP_LOGI(TAG, "SD mounted at %s", MOUNT_POINT);
+
+    /* Create required directories if they don't exist yet */
+    mkdir(SD_ROM_DIR,  0775);
+    mkdir(SD_SAVE_DIR, 0775);
+
     return 0;
 }
 
@@ -83,7 +88,7 @@ uint8_t *sd_load_rom(const char *path, size_t *out_size)
 
 int sd_list_roms(char names[][SD_NAME_LEN], int max_count)
 {
-    DIR *dir = opendir(MOUNT_POINT);
+    DIR *dir = opendir(SD_ROM_DIR);
     if (!dir) return 0;
 
     int count = 0;

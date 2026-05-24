@@ -20,6 +20,7 @@
 #include "menu.h"
 #include "nes.h"
 #include "nes_rom.h"
+#include "nesstate.h"
 
 // ── Pins (active-low, internal pull-up) ───────────────────────────────────
 #define BTN_UP     47
@@ -39,7 +40,8 @@
 char configfilename[] = "na";
 
 // ── Audio ──────────────────────────────────────────────────────────────────
-static void (*audio_cb)(void *buf, int len) = NULL;
+/* volatile: written by main task (Core 0), read by audio task (Core 1) */
+static void (* volatile audio_cb)(void *buf, int len) = NULL;
 
 void osd_setsound(void (*playfunc)(void *buf, int len)) { audio_cb = playfunc; }
 
@@ -190,8 +192,10 @@ static void audio_task_fn(void *arg) {
     int   tick = 0;
 
     for (;;) {
-        if (audio_cb)
-            audio_cb(buf, FRAG_SIZE);
+        /* Load volatile ptr once so both the null-check and the call see the same value */
+        void (*cb)(void *, int) = audio_cb;
+        if (cb)
+            cb(buf, FRAG_SIZE);
         else
             memset(buf, 0, sizeof(buf));
 
@@ -231,6 +235,9 @@ void osd_getvideoinfo(vidinfo_t *info) {
     info->default_height = NES_H;
     info->driver         = &esp32_driver;
 }
+
+// ── ROM path (forward-declared so osd_getinput can reference it) ──────────
+static char osd_sel_path[128] = SD_ROM_DIR "/rom.nes";
 
 // ── Timer ──────────────────────────────────────────────────────────────────
 static esp_timer_handle_t nes_timer = NULL;
@@ -295,18 +302,47 @@ void osd_getinput(void) {
 
     int suppress = 0;
 
-    // SELECT (bit 2) + A (bit 0) held for ~500ms → save SRAM + return to menu
+    // SELECT (bit 2) + A (bit 0) held for ~500ms → open pause menu
     if ((cur & (1 << 2)) && (cur & (1 << 0))) {
         suppress |= (1 << 2) | (1 << 0);
         if (++select_a_frames >= 25) {   // 25 × ~20ms = 500ms
             select_a_frames = 0;
-            nes_t *nes = nes_getcontextptr();
-            if (nes && nes->rominfo)
-                rom_savesram(nes->rominfo);
+            void (*saved_cb)(void *buf, int len) = audio_cb;
             audio_cb = NULL;
-            osd_return_to_menu = true;
-            main_quit();
-            return;
+            display_clear_black();
+            /* Snapshot the tick counter so we can rewind it after the menu.
+               nes_emulate() computes frames_to_render = nofrendo_ticks - last_ticks;
+               if we don't reset it, the emulator fast-forwards through the whole
+               pause duration at 240 MHz, causing the APU to produce garbage audio. */
+            int ticks_at_pause = nofrendo_ticks;
+            pause_result_t pr = menu_pause(osd_sel_path);
+            switch (pr.action) {
+                case PAUSE_SAVE:
+                    state_setslot(pr.slot);
+                    state_save();
+                    break;
+                case PAUSE_LOAD:
+                    state_setslot(pr.slot);
+                    state_load();
+                    break;
+                case PAUSE_ROM_MENU: {
+                    nes_t *nes = nes_getcontextptr();
+                    if (nes && nes->rominfo)
+                        rom_savesram(nes->rominfo);
+                    osd_return_to_menu = true;
+                    main_quit();
+                    return;
+                }
+                default:  /* PAUSE_RESUME */
+                    break;
+            }
+            /* Clear full 320×240 panel — LVGL drew over the side bands and the NES
+               only redraws the 256px centre strip, so leftovers would linger. */
+            display_clear_black();
+            audio_cb = saved_cb;
+            /* Rewind tick counter to just after the paused frame so nes_emulate()
+               renders one normal-speed frame instead of fast-forwarding. */
+            nofrendo_ticks = ticks_at_pause + 1;
         }
     } else {
         select_a_frames = 0;
@@ -347,7 +383,6 @@ static int logprint(const char *s) { return printf("%s", s); }
 // ── ROM data ───────────────────────────────────────────────────────────────
 static uint8_t *rom_data = NULL;
 static size_t   rom_size = 0;
-static char     osd_sel_path[128] = "/sdcard/rom.nes";
 
 void osd_setromdata(uint8_t *data, size_t size) { rom_data = data; rom_size = size; }
 char *osd_getromdata(void) { return (char *)rom_data; }
@@ -364,7 +399,7 @@ static void osd_select_rom(void) {
     int sel = menu_select((const char (*)[SD_NAME_LEN])rom_names, count);
     display_clear_black();  // erase menu artifacts from side bands
     if (sel >= 0)
-        snprintf(osd_sel_path, sizeof(osd_sel_path), "/sdcard/%s", rom_names[sel]);
+        snprintf(osd_sel_path, sizeof(osd_sel_path), SD_ROM_DIR "/%s", rom_names[sel]);
 
     if (rom_data) { free(rom_data); rom_data = NULL; rom_size = 0; }
 
@@ -417,8 +452,16 @@ void osd_fullname(char *fullname, const char *shortname) {
     strncpy(fullname, shortname, PATH_MAX);
 }
 char *osd_newextension(char *string, char *ext) {
-    char *dot = strrchr(string, '.');
-    if (dot) strcpy(dot, ext);
+    /* Strip directory: saves always go to SD_SAVE_DIR regardless of ROM location */
+    char *slash = strrchr(string, '/');
+    const char *base = slash ? slash + 1 : string;
+    /* Strip old extension */
+    char stem[256];   /* FAT32 filename limit is 255 chars */
+    strncpy(stem, base, 255);
+    stem[255] = '\0';
+    char *dot = strrchr(stem, '.');
+    if (dot) *dot = '\0';
+    snprintf(string, PATH_MAX + 1, SD_SAVE_DIR "/%s%s", stem, ext);
     return string;
 }
 int   osd_makesnapname(char *filename, int len)  { (void)filename; (void)len; return -1; }
